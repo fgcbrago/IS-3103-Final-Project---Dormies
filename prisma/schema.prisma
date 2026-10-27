@@ -1,0 +1,357 @@
+// Dormies database schema (MySQL), matches the data dictionary in the final paper.
+// Create the tables with:  npx prisma db push
+// Field names are the same as the column names, so the API returns snake_case like the frontend expects.
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Role {
+  role_id     Int     @id @default(autoincrement())
+  role_name   String  @unique @db.VarChar(20)
+  description String? @db.VarChar(255)
+  users       User[]
+
+  @@map("roles")
+}
+
+model User {
+  user_id         Int       @id @default(autoincrement())
+  role_id         Int
+  full_name       String    @default("") @db.VarChar(100)
+  username        String    @unique @db.VarChar(50)
+  email           String    @unique @db.VarChar(100)
+  password_hash   String    @db.VarChar(255)
+  is_active       Boolean   @default(true)
+  failed_attempts Int       @default(0)
+  locked_until    DateTime? @db.DateTime(0)
+  last_login_at   DateTime? @db.DateTime(0)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @default(now()) @db.DateTime(0)
+
+  role                Role                 @relation(fields: [role_id], references: [role_id])
+  resident            Resident?
+  assigned_requests   MaintenanceRequest[] @relation("RequestAssignee")
+  submitted_requests  MaintenanceRequest[] @relation("RequestSubmitter")
+  inspections         BedAssignment[]
+  payments            Payment[]
+  submitted_transfers TransferRequest[]    @relation("TransferSubmitter")
+  reviewed_transfers  TransferRequest[]    @relation("TransferReviewer")
+  announcements       Announcement[]
+  announcement_reads  AnnouncementRead[]
+  notifications       Notification[]
+  visitor_logs        VisitorLog[]
+  audit_logs          AuditLog[]
+  confirmed_bills     Bill[]               @relation("BillConfirmer")
+  generated_bills     Bill[]               @relation("BillGenerator")
+
+  @@map("users")
+}
+
+model Resident {
+  resident_id  Int      @id @default(autoincrement())
+  user_id      Int?     @unique
+  first_name   String   @db.VarChar(50)
+  last_name    String   @db.VarChar(50)
+  gender       String?  @db.VarChar(15)
+  phone_number String?  @db.VarChar(20)
+  email        String?  @db.VarChar(100)
+  id_number    String?  @db.VarChar(30)
+  is_archived  Boolean  @default(false)
+  created_at   DateTime @default(now()) @db.DateTime(0)
+
+  user               User?                @relation(fields: [user_id], references: [user_id])
+  emergency_contacts EmergencyContact[]
+  assignments        BedAssignment[]
+  bills              Bill[]
+  maintenance        MaintenanceRequest[]
+  transfers          TransferRequest[]
+  visits             VisitorLog[]
+
+  @@map("residents")
+}
+
+model EmergencyContact {
+  contact_id   Int     @id @default(autoincrement())
+  resident_id  Int
+  contact_name String  @db.VarChar(100)
+  relationship String? @db.VarChar(50)
+  phone_number String  @db.VarChar(20)
+  address      String? @db.VarChar(255)
+  is_primary   Boolean @default(true)
+
+  resident Resident @relation(fields: [resident_id], references: [resident_id])
+
+  @@map("emergency_contacts")
+}
+
+model Building {
+  building_id   Int     @id @default(autoincrement())
+  building_name String  @db.VarChar(100)
+  building_code String  @unique @db.VarChar(10)
+  address       String? @db.VarChar(255)
+  total_floors  Int     @default(1)
+  rooms         Room[]
+
+  @@map("buildings")
+}
+
+model Room {
+  room_id           Int     @id @default(autoincrement())
+  building_id       Int
+  room_number       String  @db.VarChar(20)
+  floor_level       Int     @default(1)
+  room_type         String  @db.VarChar(20)
+  capacity          Int
+  base_monthly_rate Decimal @db.Decimal(10, 2)
+  status            String  @default("Available") @db.VarChar(20)
+
+  building    Building             @relation(fields: [building_id], references: [building_id])
+  beds        Bed[]
+  bills       Bill[]
+  maintenance MaintenanceRequest[]
+
+  @@unique([building_id, room_number])
+  @@map("rooms")
+}
+
+model Bed {
+  bed_id   Int    @id @default(autoincrement())
+  room_id  Int
+  bed_code String @unique @db.VarChar(20)
+  status   String @default("Available") @db.VarChar(20)
+
+  room             Room              @relation(fields: [room_id], references: [room_id])
+  assignments      BedAssignment[]
+  current_transfer TransferRequest[] @relation("TransferCurrentBed")
+  wanted_transfer  TransferRequest[] @relation("TransferPreferredBed")
+
+  @@map("beds")
+}
+
+// active_flag is 1 while the assignment is Active and NULL otherwise. MySQL has no partial unique index,
+// so these two unique keys give the same rule: one active bed per resident and one active resident per bed.
+model BedAssignment {
+  assignment_id          Int       @id @default(autoincrement())
+  resident_id            Int
+  bed_id                 Int
+  move_in_date           DateTime  @db.Date
+  expected_move_out_date DateTime? @db.Date
+  move_out_date          DateTime? @db.Date
+  deposit_amount         Decimal   @default(0) @db.Decimal(10, 2)
+  deposit_status         String    @default("Held") @db.VarChar(20)
+  refund_amount          Decimal?  @db.Decimal(10, 2)
+  deposit_notes          String?   @db.VarChar(255)
+  deposit_settled_at     DateTime? @db.DateTime(0)
+  inspection_condition   String?   @db.VarChar(50)
+  inspection_notes       String?   @db.VarChar(500)
+  inspected_by_user_id   Int?
+  assignment_status      String    @default("Active") @db.VarChar(20)
+  active_flag            Int?
+  created_at             DateTime  @default(now()) @db.DateTime(0)
+
+  resident  Resident @relation(fields: [resident_id], references: [resident_id])
+  bed       Bed      @relation(fields: [bed_id], references: [bed_id])
+  inspector User?    @relation(fields: [inspected_by_user_id], references: [user_id])
+  bills     Bill[]
+
+  @@unique([resident_id, active_flag], map: "ux_one_active_per_resident")
+  @@unique([bed_id, active_flag], map: "ux_one_active_per_bed")
+  @@map("bed_assignments")
+}
+
+model Bill {
+  bill_id              Int       @id @default(autoincrement())
+  assignment_id        Int
+  resident_id          Int
+  room_id              Int
+  billing_period       String    @db.VarChar(7)
+  rent_amount          Decimal   @default(0) @db.Decimal(10, 2)
+  electricity_amount   Decimal   @default(0) @db.Decimal(10, 2)
+  water_amount         Decimal   @default(0) @db.Decimal(10, 2)
+  internet_amount      Decimal   @default(0) @db.Decimal(10, 2)
+  total_amount         Decimal   @default(0) @db.Decimal(10, 2)
+  penalty_amount       Decimal   @default(0) @db.Decimal(10, 2)
+  due_date             DateTime  @db.Date
+  status               String    @default("Unpaid") @db.VarChar(20)
+  is_confirmed         Boolean   @default(false)
+  confirmed_by_user_id Int?
+  confirmed_at         DateTime? @db.DateTime(0)
+  generated_by_user_id Int?
+  generated_at         DateTime  @default(now()) @db.DateTime(0)
+
+  assignment BedAssignment @relation(fields: [assignment_id], references: [assignment_id])
+  resident   Resident      @relation(fields: [resident_id], references: [resident_id])
+  room       Room          @relation(fields: [room_id], references: [room_id])
+  confirmer  User?         @relation("BillConfirmer", fields: [confirmed_by_user_id], references: [user_id])
+  generator  User?         @relation("BillGenerator", fields: [generated_by_user_id], references: [user_id])
+  payments   Payment[]
+
+  @@unique([resident_id, billing_period])
+  @@index([resident_id], map: "ix_bills_resident")
+  @@map("bills")
+}
+
+model Payment {
+  payment_id          Int      @id @default(autoincrement())
+  bill_id             Int
+  recorded_by_user_id Int
+  amount_paid         Decimal  @db.Decimal(10, 2)
+  payment_date        DateTime @db.Date
+  payment_method      String   @db.VarChar(20)
+  reference_number    String?  @db.VarChar(50)
+  receipt_number      String   @unique @db.VarChar(30)
+  created_at          DateTime @default(now()) @db.DateTime(0)
+
+  bill        Bill @relation(fields: [bill_id], references: [bill_id])
+  recorded_by User @relation(fields: [recorded_by_user_id], references: [user_id])
+
+  @@index([bill_id], map: "ix_payments_bill")
+  @@map("payments")
+}
+
+model MaintenanceRequest {
+  request_id           Int       @id @default(autoincrement())
+  resident_id          Int
+  room_id              Int?
+  location             String?   @db.VarChar(150)
+  issue_category       String    @db.VarChar(50)
+  description          String    @db.Text
+  urgency              String    @default("Medium") @db.VarChar(20)
+  status               String    @default("Pending") @db.VarChar(20)
+  assigned_to_user_id  Int?
+  remarks              String?   @db.Text
+  target_date          DateTime? @db.Date
+  submitted_by_user_id Int?
+  submitted_at         DateTime  @default(now()) @db.DateTime(0)
+  updated_at           DateTime? @db.DateTime(0)
+  resolved_at          DateTime? @db.DateTime(0)
+
+  resident    Resident @relation(fields: [resident_id], references: [resident_id])
+  room        Room?    @relation(fields: [room_id], references: [room_id])
+  assignee    User?    @relation("RequestAssignee", fields: [assigned_to_user_id], references: [user_id])
+  submitted_by User?   @relation("RequestSubmitter", fields: [submitted_by_user_id], references: [user_id])
+
+  @@map("maintenance_requests")
+}
+
+model TransferRequest {
+  transfer_id          Int       @id @default(autoincrement())
+  resident_id          Int
+  current_bed_id       Int
+  preferred_bed_id     Int
+  reason               String    @db.VarChar(500)
+  status               String    @default("Pending") @db.VarChar(20)
+  admin_remarks        String?   @db.VarChar(500)
+  transfer_date        DateTime? @db.Date
+  submitted_by_user_id Int?
+  submitted_at         DateTime  @default(now()) @db.DateTime(0)
+  reviewed_at          DateTime? @db.DateTime(0)
+  reviewed_by_user_id  Int?
+
+  resident      Resident @relation(fields: [resident_id], references: [resident_id])
+  current_bed   Bed      @relation("TransferCurrentBed", fields: [current_bed_id], references: [bed_id])
+  preferred_bed Bed      @relation("TransferPreferredBed", fields: [preferred_bed_id], references: [bed_id])
+  submitter     User?    @relation("TransferSubmitter", fields: [submitted_by_user_id], references: [user_id])
+  reviewer      User?    @relation("TransferReviewer", fields: [reviewed_by_user_id], references: [user_id])
+
+  @@map("transfer_requests")
+}
+
+model Announcement {
+  announcement_id   Int       @id @default(autoincrement())
+  posted_by_user_id Int
+  title             String    @db.VarChar(120)
+  content           String    @db.Text
+  priority          String    @default("Normal") @db.VarChar(20)
+  target_audience   String    @default("All") @db.VarChar(20)
+  status            String    @default("Published") @db.VarChar(20)
+  is_pinned         Boolean   @default(false)
+  publish_at        DateTime? @db.DateTime(0)
+  created_at        DateTime  @default(now()) @db.DateTime(0)
+  expires_at        DateTime? @db.DateTime(0)
+
+  posted_by User               @relation(fields: [posted_by_user_id], references: [user_id])
+  reads     AnnouncementRead[]
+
+  @@map("announcements")
+}
+
+model AnnouncementRead {
+  announcement_id Int
+  user_id         Int
+  read_at         DateTime @default(now()) @db.DateTime(0)
+
+  announcement Announcement @relation(fields: [announcement_id], references: [announcement_id], onDelete: Cascade)
+  user         User         @relation(fields: [user_id], references: [user_id])
+
+  @@id([announcement_id, user_id])
+  @@map("announcement_reads")
+}
+
+model Notification {
+  notification_id Int      @id @default(autoincrement())
+  user_id         Int
+  title           String   @db.VarChar(100)
+  message         String   @db.VarChar(255)
+  type            String   @db.VarChar(20)
+  reference_id    Int?
+  is_read         Boolean  @default(false)
+  email_status    String   @default("Not sent") @db.VarChar(20)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+
+  user User @relation(fields: [user_id], references: [user_id])
+
+  @@index([user_id, is_read], map: "ix_notifications_user")
+  @@map("notifications")
+}
+
+model VisitorLog {
+  log_id                  Int       @id @default(autoincrement())
+  host_resident_id        Int
+  logged_by_user_id       Int
+  visitor_name            String    @db.VarChar(100)
+  contact_number          String?   @db.VarChar(20)
+  id_type                 String?   @db.VarChar(30)
+  id_number               String?   @db.VarChar(50)
+  purpose                 String    @db.VarChar(100)
+  notes                   String?   @db.VarChar(255)
+  check_in_time           DateTime  @db.DateTime(0)
+  expected_check_out_time DateTime? @db.DateTime(0)
+  check_out_time          DateTime? @db.DateTime(0)
+
+  host      Resident @relation(fields: [host_resident_id], references: [resident_id])
+  logged_by User     @relation(fields: [logged_by_user_id], references: [user_id])
+
+  @@index([host_resident_id], map: "ix_visitors_host")
+  @@map("visitor_logs")
+}
+
+model AuditLog {
+  audit_id        Int      @id @default(autoincrement())
+  user_id         Int?
+  action          String   @db.VarChar(30)
+  entity_affected String   @db.VarChar(50)
+  entity_id       Int?
+  details         String?  @db.Text
+  ip_address      String?  @db.VarChar(45)
+  timestamp       DateTime @default(now()) @db.DateTime(0)
+
+  user User? @relation(fields: [user_id], references: [user_id])
+
+  @@index([timestamp], map: "ix_audit_time")
+  @@map("audit_logs")
+}
+
+model Setting {
+  setting_key   String  @id @db.VarChar(50)
+  setting_value String? @db.VarChar(255)
+
+  @@map("settings")
+}
